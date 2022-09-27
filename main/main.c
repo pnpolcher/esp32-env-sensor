@@ -8,6 +8,7 @@
 
 #include "esp_log.h"
 
+#include "bme680.h"
 #include "i2c.h"
 #include "sps30.h"
 #include "ssd1306.h"
@@ -18,6 +19,12 @@ static const char *TAG = "main";
 void vMeasureTask(void *pvParameters)
 {
     uint8_t ready_flag;
+
+    bme680_init();
+    for(;;)
+    {
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
 
     ESP_LOGI(TAG, "Start measurement");
     sps30_start_measurement();
