@@ -1,449 +1,55 @@
 #include <stdlib.h>
 
+#include "driver/i2c.h"
+#include "freertos/task.h"
+
+#include "bme680.h"
 #include "i2c.h"
+#include "utils.h"
 
 
 #define BME680_I2C_ADDR     0x76
 
 #define BME680_CHIP_ID      0x61
 #define BME680_PERIOD_RESET 10000
+#define BME680_PERIOD_POLL  10          // In milliseconds
 
 #define BME680_CMD_SOFT_RESET   0xb6
-
-
-/* Registers */
-#define BME680_REG_COEFF3                         0x00
-#define BME680_REG_FIELD0                         0x1d
-#define BME680_REG_IDAC_HEAT0                     0x50
-#define BME680_REG_RES_HEAT0                      0x5a
-#define BME680_REG_GAS_WAIT0                      0x64
-#define BME680_REG_SHD_HEATR_DUR                  0x6e
-#define BME680_REG_CTRL_GAS_0                     0x70
-#define BME680_REG_CTRL_GAS_1                     0x71
-#define BME680_REG_CTRL_HUM                       0x72
-#define BME680_REG_CTRL_MEAS                      0x74
-#define BME680_REG_CONFIG                         0x75
-#define BME680_REG_MEM_PAGE                       0xf3
-#define BME680_REG_UNIQUE_ID                      0x83
-#define BME680_REG_COEFF1                         0x8a
-#define BME680_REG_CHIP_ID                        0xd0
-#define BME680_REG_SOFT_RESET                     0xe0
-#define BME680_REG_COEFF2                         0xe1
-#define BME680_REG_VARIANT_ID                     0xf0
-
 
 /* Information - only available via BME680_dev.info_msg */
 #define BME680_I_PARAM_CORR                       UINT8_C(1)
 
-#define BME680_ENABLE                             UINT8_C(0x01)
-#define BME680_DISABLE                            UINT8_C(0x00)
+#define BME680_SET_BITS(reg_data, bitname, data) \
+    ((reg_data & ~(bitname##_MASK)) | \
+     ((data << bitname##_POS) & bitname##_MASK))
 
-/* Variant ID macros */
+#define BME680_SET_BITS_POS_0(reg_data, bitname, data) \
+    ((reg_data & ~(bitname##_MASK)) | \
+     (data & bitname##_MASK))
 
-/* Low Gas variant */
-#define BME680_VARIANT_GAS_LOW                    UINT8_C(0x00)
+#define BME680_GET_BITS(reg_data, bitname)        ((reg_data & (bitname##_MASK)) >> \
+                                                   (bitname##_POS))
 
-/* High Gas variant */
-#define BME680_VARIANT_GAS_HIGH                   UINT8_C(0x01)
+#define BME680_GET_BITS_POS_0(reg_data, bitname)  (reg_data & (bitname##_MASK))
 
-/* Oversampling setting macros */
 
-/* Switch off measurement */
-#define BME680_OS_NONE                            UINT8_C(0)
+static esp_err_t bme680_get_calibration_data(struct bme680_cal_data *cal);
+esp_err_t bme680_read_all_field_data(struct bme680_data * const data[], struct bme680_cal_data *cal, uint8_t variant_id);
+static esp_err_t bme680_read_field_data(uint8_t index, struct bme680_data *data, struct bme680_cal_data *cal, uint8_t variant_id);
+static float bme680_calc_gas_resistance_high(uint16_t gas_res_adc, uint8_t gas_range);
+static float bme680_calc_gas_resistance_low(uint16_t gas_res_adc, uint8_t gas_range, const struct bme680_cal_data *cal);
+static float bme680_calc_humidity(uint16_t hum_adc, const struct bme680_cal_data *cal);
+static float bme680_calc_pressure(uint32_t pres_adc, const struct bme680_cal_data *cal);
+static float bme680_calc_temperature(uint32_t temp_adc, struct bme680_cal_data *cal);
+static void sort_sensor_data(uint8_t low_index, uint8_t high_index, struct bme680_data *field[]);
 
-/* Perform 1 measurement */
-#define BME680_OS_1X                              UINT8_C(1)
 
-/* Perform 2 measurements */
-#define BME680_OS_2X                              UINT8_C(2)
-
-/* Perform 4 measurements */
-#define BME680_OS_4X                              UINT8_C(3)
-
-/* Perform 8 measurements */
-#define BME680_OS_8X                              UINT8_C(4)
-
-/* Perform 16 measurements */
-#define BME680_OS_16X                             UINT8_C(5)
-
-/* IIR Filter settings */
-
-/* Switch off the filter */
-#define BME680_FILTER_OFF                         UINT8_C(0)
-
-/* Filter coefficient of 2 */
-#define BME680_FILTER_SIZE_1                      UINT8_C(1)
-
-/* Filter coefficient of 4 */
-#define BME680_FILTER_SIZE_3                      UINT8_C(2)
-
-/* Filter coefficient of 8 */
-#define BME680_FILTER_SIZE_7                      UINT8_C(3)
-
-/* Filter coefficient of 16 */
-#define BME680_FILTER_SIZE_15                     UINT8_C(4)
-
-/* Filter coefficient of 32 */
-#define BME680_FILTER_SIZE_31                     UINT8_C(5)
-
-/* Filter coefficient of 64 */
-#define BME680_FILTER_SIZE_63                     UINT8_C(6)
-
-/* Filter coefficient of 128 */
-#define BME680_FILTER_SIZE_127                    UINT8_C(7)
-
-/* ODR/Standby time macros */
-
-/* Standby time of 0.59ms */
-#define BME680_ODR_0_59_MS                        UINT8_C(0)
-
-/* Standby time of 62.5ms */
-#define BME680_ODR_62_5_MS                        UINT8_C(1)
-
-/* Standby time of 125ms */
-#define BME680_ODR_125_MS                         UINT8_C(2)
-
-/* Standby time of 250ms */
-#define BME680_ODR_250_MS                         UINT8_C(3)
-
-/* Standby time of 500ms */
-#define BME680_ODR_500_MS                         UINT8_C(4)
-
-/* Standby time of 1s */
-#define BME680_ODR_1000_MS                        UINT8_C(5)
-
-/* Standby time of 10ms */
-#define BME680_ODR_10_MS                          UINT8_C(6)
-
-/* Standby time of 20ms */
-#define BME680_ODR_20_MS                          UINT8_C(7)
-
-/* No standby time */
-#define BME680_ODR_NONE                           UINT8_C(8)
-
-/* Operating mode macros */
-
-/* Sleep operation mode */
-#define BME680_SLEEP_MODE                         UINT8_C(0)
-
-/* Forced operation mode */
-#define BME680_FORCED_MODE                        UINT8_C(1)
-
-/* Parallel operation mode */
-#define BME680_PARALLEL_MODE                      UINT8_C(2)
-
-/* Sequential operation mode */
-#define BME680_SEQUENTIAL_MODE                    UINT8_C(3)
-
-/* SPI page macros */
-
-/* SPI memory page 0 */
-#define BME680_MEM_PAGE0                          UINT8_C(0x10)
-
-/* SPI memory page 1 */
-#define BME680_MEM_PAGE1                          UINT8_C(0x00)
-
-/* Coefficient index macros */
-
-/* Length for all coefficients */
-#define BME680_LEN_COEFF_ALL                      UINT8_C(42)
-
-/* Length for 1st group of coefficients */
-#define BME680_LEN_COEFF1                         UINT8_C(23)
-
-/* Length for 2nd group of coefficients */
-#define BME680_LEN_COEFF2                         UINT8_C(14)
-
-/* Length for 3rd group of coefficients */
-#define BME680_LEN_COEFF3                         UINT8_C(5)
-
-/* Length of the field */
-#define BME680_LEN_FIELD                          UINT8_C(17)
-
-/* Length between two fields */
-#define BME680_LEN_FIELD_OFFSET                   UINT8_C(17)
-
-/* Length of the configuration register */
-#define BME680_LEN_CONFIG                         UINT8_C(5)
-
-/* Length of the interleaved buffer */
-#define BME680_LEN_INTERLEAVE_BUFF                UINT8_C(20)
-
-/* Coefficient index macros */
-
-/* Coefficient T2 LSB position */
-#define BME680_IDX_T2_LSB                         (0)
-
-/* Coefficient T2 MSB position */
-#define BME680_IDX_T2_MSB                         (1)
-
-/* Coefficient T3 position */
-#define BME680_IDX_T3                             (2)
-
-/* Coefficient P1 LSB position */
-#define BME680_IDX_P1_LSB                         (4)
-
-/* Coefficient P1 MSB position */
-#define BME680_IDX_P1_MSB                         (5)
-
-/* Coefficient P2 LSB position */
-#define BME680_IDX_P2_LSB                         (6)
-
-/* Coefficient P2 MSB position */
-#define BME680_IDX_P2_MSB                         (7)
-
-/* Coefficient P3 position */
-#define BME680_IDX_P3                             (8)
-
-/* Coefficient P4 LSB position */
-#define BME680_IDX_P4_LSB                         (10)
-
-/* Coefficient P4 MSB position */
-#define BME680_IDX_P4_MSB                         (11)
-
-/* Coefficient P5 LSB position */
-#define BME680_IDX_P5_LSB                         (12)
-
-/* Coefficient P5 MSB position */
-#define BME680_IDX_P5_MSB                         (13)
-
-/* Coefficient P7 position */
-#define BME680_IDX_P7                             (14)
-
-/* Coefficient P6 position */
-#define BME680_IDX_P6                             (15)
-
-/* Coefficient P8 LSB position */
-#define BME680_IDX_P8_LSB                         (18)
-
-/* Coefficient P8 MSB position */
-#define BME680_IDX_P8_MSB                         (19)
-
-/* Coefficient P9 LSB position */
-#define BME680_IDX_P9_LSB                         (20)
-
-/* Coefficient P9 MSB position */
-#define BME680_IDX_P9_MSB                         (21)
-
-/* Coefficient P10 position */
-#define BME680_IDX_P10                            (22)
-
-/* Coefficient H2 MSB position */
-#define BME680_IDX_H2_MSB                         (23)
-
-/* Coefficient H2 LSB position */
-#define BME680_IDX_H2_LSB                         (24)
-
-/* Coefficient H1 LSB position */
-#define BME680_IDX_H1_LSB                         (24)
-
-/* Coefficient H1 MSB position */
-#define BME680_IDX_H1_MSB                         (25)
-
-/* Coefficient H3 position */
-#define BME680_IDX_H3                             (26)
-
-/* Coefficient H4 position */
-#define BME680_IDX_H4                             (27)
-
-/* Coefficient H5 position */
-#define BME680_IDX_H5                             (28)
-
-/* Coefficient H6 position */
-#define BME680_IDX_H6                             (29)
-
-/* Coefficient H7 position */
-#define BME680_IDX_H7                             (30)
-
-/* Coefficient T1 LSB position */
-#define BME680_IDX_T1_LSB                         (31)
-
-/* Coefficient T1 MSB position */
-#define BME680_IDX_T1_MSB                         (32)
-
-/* Coefficient GH2 LSB position */
-#define BME680_IDX_GH2_LSB                        (33)
-
-/* Coefficient GH2 MSB position */
-#define BME680_IDX_GH2_MSB                        (34)
-
-/* Coefficient GH1 position */
-#define BME680_IDX_GH1                            (35)
-
-/* Coefficient GH3 position */
-#define BME680_IDX_GH3                            (36)
-
-/* Coefficient res heat value position */
-#define BME680_IDX_RES_HEAT_VAL                   (37)
-
-/* Coefficient res heat range position */
-#define BME680_IDX_RES_HEAT_RANGE                 (39)
-
-/* Coefficient range switching error position */
-#define BME680_IDX_RANGE_SW_ERR                   (41)
-
-/* Gas measurement macros */
-
-/* Disable gas measurement */
-#define BME680_DISABLE_GAS_MEAS                   UINT8_C(0x00)
-
-/* Enable gas measurement low */
-#define BME680_ENABLE_GAS_MEAS_L                  UINT8_C(0x01)
-
-/* Enable gas measurement high */
-#define BME680_ENABLE_GAS_MEAS_H                  UINT8_C(0x02)
-
-/* Heater control macros */
-
-/* Enable heater */
-#define BME680_ENABLE_HEATER                      UINT8_C(0x00)
-
-/* Disable heater */
-#define BME680_DISABLE_HEATER                     UINT8_C(0x01)
-
-#ifdef BME680_USE_FPU
-
-/* 0 degree Celsius */
-#define BME680_MIN_TEMPERATURE                    INT16_C(0)
-
-/* 60 degree Celsius */
-#define BME680_MAX_TEMPERATURE                    INT16_C(60)
-
-/* 900 hecto Pascals */
-#define BME680_MIN_PRESSURE                       UINT32_C(90000)
-
-/* 1100 hecto Pascals */
-#define BME680_MAX_PRESSURE                       UINT32_C(110000)
-
-/* 20% relative humidity */
-#define BME680_MIN_HUMIDITY                       UINT32_C(20)
-
-/* 80% relative humidity*/
-#define BME680_MAX_HUMIDITY                       UINT32_C(80)
-#else
-
-/* 0 degree Celsius */
-#define BME680_MIN_TEMPERATURE                    INT16_C(0)
-
-/* 60 degree Celsius */
-#define BME680_MAX_TEMPERATURE                    INT16_C(6000)
-
-/* 900 hecto Pascals */
-#define BME680_MIN_PRESSURE                       UINT32_C(90000)
-
-/* 1100 hecto Pascals */
-#define BME680_MAX_PRESSURE                       UINT32_C(110000)
-
-/* 20% relative humidity */
-#define BME680_MIN_HUMIDITY                       UINT32_C(20000)
-
-/* 80% relative humidity*/
-#define BME680_MAX_HUMIDITY                       UINT32_C(80000)
-
-#endif
-
-#define BME680_HEATR_DUR1                         UINT16_C(1000)
-#define BME680_HEATR_DUR2                         UINT16_C(2000)
-#define BME680_HEATR_DUR1_DELAY                   UINT32_C(1000000)
-#define BME680_HEATR_DUR2_DELAY                   UINT32_C(2000000)
-#define BME680_N_MEAS                             UINT8_C(6)
-#define BME680_LOW_TEMP                           UINT8_C(150)
-#define BME680_HIGH_TEMP                          UINT16_C(350)
-
-/* Mask macros */
-/* Mask for number of conversions */
-#define BME680_NBCONV_MSK                         UINT8_C(0X0f)
-
-/* Mask for IIR filter */
-#define BME680_FILTER_MSK                         UINT8_C(0X1c)
-
-/* Mask for ODR[3] */
-#define BME680_ODR3_MSK                           UINT8_C(0x80)
-
-/* Mask for ODR[2:0] */
-#define BME680_ODR20_MSK                          UINT8_C(0xe0)
-
-/* Mask for temperature oversampling */
-#define BME680_OST_MSK                            UINT8_C(0Xe0)
-
-/* Mask for pressure oversampling */
-#define BME680_OSP_MSK                            UINT8_C(0X1c)
-
-/* Mask for humidity oversampling */
-#define BME680_OSH_MSK                            UINT8_C(0X07)
-
-/* Mask for heater control */
-#define BME680_HCTRL_MSK                          UINT8_C(0x08)
-
-/* Mask for run gas */
-#define BME680_RUN_GAS_MSK                        UINT8_C(0x30)
-
-/* Mask for operation mode */
-#define BME680_MODE_MSK                           UINT8_C(0x03)
-
-/* Mask for res heat range */
-#define BME680_RHRANGE_MSK                        UINT8_C(0x30)
-
-/* Mask for range switching error */
-#define BME680_RSERROR_MSK                        UINT8_C(0xf0)
-
-/* Mask for new data */
-#define BME680_NEW_DATA_MSK                       UINT8_C(0x80)
-
-/* Mask for gas index */
-#define BME680_GAS_INDEX_MSK                      UINT8_C(0x0f)
-
-/* Mask for gas range */
-#define BME680_GAS_RANGE_MSK                      UINT8_C(0x0f)
-
-/* Mask for gas measurement valid */
-#define BME680_GASM_VALID_MSK                     UINT8_C(0x20)
-
-/* Mask for heater stability */
-#define BME680_HEAT_STAB_MSK                      UINT8_C(0x10)
-
-/* Mask for SPI memory page */
-#define BME680_MEM_PAGE_MSK                       UINT8_C(0x10)
-
-/* Mask for reading a register in SPI */
-#define BME680_SPI_RD_MSK                         UINT8_C(0x80)
-
-/* Mask for writing a register in SPI */
-#define BME680_SPI_WR_MSK                         UINT8_C(0x7f)
-
-/* Mask for the H1 calibration coefficient */
-#define BME680_BIT_H1_DATA_MSK                    UINT8_C(0x0f)
-
-/* Position macros */
-
-/* Filter bit position */
-#define BME680_FILTER_POS                         UINT8_C(2)
-
-/* Temperature oversampling bit position */
-#define BME680_OST_POS                            UINT8_C(5)
-
-/* Pressure oversampling bit position */
-#define BME680_OSP_POS                            UINT8_C(2)
-
-/* ODR[3] bit position */
-#define BME680_ODR3_POS                           UINT8_C(7)
-
-/* ODR[2:0] bit position */
-#define BME680_ODR20_POS                          UINT8_C(5)
-
-/* Run gas bit position */
-#define BME680_RUN_GAS_POS                        UINT8_C(4)
-
-/* Heater control bit position */
-#define BME680_HCTRL_POS                          UINT8_C(3)
-
-
-
-esp_err_t bme680_sw_reset()
+esp_err_t bme680_soft_reset()
 {
     esp_err_t err;
 
     uint8_t cmd[] = {
+        BME680_I2C_ADDR | I2C_MASTER_WRITE,
         BME680_REG_SOFT_RESET,
         BME680_CMD_SOFT_RESET,
     };
@@ -452,13 +58,13 @@ esp_err_t bme680_sw_reset()
     return err;
 }
 
-esp_err_t bme680_init()
+esp_err_t bme680_init(struct bme680_cal_data *cal)
 {
     esp_err_t err;
     uint8_t chip_id;
     uint8_t variant_id;
 
-    err = bme680_sw_reset();
+    err = bme680_soft_reset();
     if (err != ESP_OK)
     {
         goto i2c_error;
@@ -476,7 +82,247 @@ esp_err_t bme680_init()
         goto i2c_error;
     }
 
+    err = bme680_get_calibration_data(cal);
+
     printf("Found BMP680 with ID 0x%x and variant ID 0x%x\n", chip_id, variant_id);
+
+i2c_error:
+    return err;
+}
+
+esp_err_t bme680_get_op_mode(uint8_t *op_mode)
+{
+    esp_err_t err;
+
+    err = i2c_read_register(BME680_I2C_ADDR, BME680_REG_CTRL_MEAS, op_mode, 1);
+    if (err == ESP_OK)
+    {
+        *op_mode = *op_mode & BME680_MODE_MASK;
+    }
+
+    return err;
+}
+
+esp_err_t bme680_set_op_mode(uint8_t op_mode)
+{
+    esp_err_t err;
+    uint8_t tmp_pow_mode;
+    uint8_t pow_mode = 0;
+
+    do
+    {
+        err = i2c_read_register(BME680_I2C_ADDR, BME680_REG_CTRL_MEAS, &tmp_pow_mode, sizeof(tmp_pow_mode));
+        if (err != ESP_OK)
+        {
+            break;
+        }
+
+        pow_mode = (tmp_pow_mode & BME680_MODE_MASK);
+        if (pow_mode != BME680_SLEEP_MODE)
+        {
+            tmp_pow_mode &= ~BME680_MODE_MASK;
+            uint8_t cmd[] = {
+                BME680_I2C_ADDR | I2C_MASTER_WRITE,
+                BME680_REG_CTRL_MEAS,
+                tmp_pow_mode
+            };
+            err = i2c_write_many(cmd, sizeof(cmd));
+            vTaskDelay(BME680_PERIOD_POLL / portTICK_PERIOD_MS);
+        }
+    } while (pow_mode != BME680_SLEEP_MODE && err == ESP_OK);
+
+    if (op_mode != BME680_SLEEP_MODE && err == ESP_OK)
+    {
+        tmp_pow_mode = (tmp_pow_mode & ~BME680_MODE_MASK) | (op_mode & BME680_MODE_MASK);
+
+        uint8_t cmd[] = {
+            BME680_I2C_ADDR | I2C_MASTER_WRITE,
+            BME680_REG_CTRL_MEAS,
+            tmp_pow_mode
+        };
+        err = i2c_write_many(cmd, sizeof(cmd));
+    }
+
+    return err;
+}
+
+esp_err_t bme680_set_config(struct bme680_config *config)
+{
+    esp_err_t err;
+    uint8_t op_mode;
+    uint8_t odr20 = 0, odr3 = 1;
+    uint8_t data[BME680_LEN_CONFIG] = { 0 };
+
+    err = bme680_get_op_mode(&op_mode);
+    if (err != ESP_OK)
+    {
+        err = bme680_set_op_mode(BME680_SLEEP_MODE);
+    }
+
+    err = i2c_read_register(BME680_I2C_ADDR, 0x71, data, BME680_LEN_CONFIG);
+    if (err != ESP_OK)
+    {
+        goto i2c_error;
+    }
+
+    // err = boundary_check(config->filter, BME680_FILTER_SIZE_127);
+    if (err != ESP_OK)
+    {
+        goto i2c_error;
+    }
+
+    // err = boundary_check(config->os_temp, BME680_OS_16X);
+    if (err != ESP_OK)
+    {
+        goto i2c_error;
+    }
+
+    // err = boundary_check(config->os_pres, BME680_OS_16X);
+    if (err != ESP_OK)
+    {
+        goto i2c_error;
+    }
+
+    // err = boundary_check(config->os_hum, BME680_OS_16X);
+    if (err != ESP_OK)
+    {
+        goto i2c_error;
+    }
+
+    // err = boundary_check(config->os_odr, BME680_ODR_NONE);
+    if (err != ESP_OK)
+    {
+        goto i2c_error;
+    }
+
+    data[4] = BME680_SET_BITS(data[4], BME680_FILTER, config->filter);
+    data[3] = BME680_SET_BITS(data[3], BME680_OST, config->os_temp);
+    data[3] = BME680_SET_BITS(data[3], BME680_OSP, config->os_pres);
+    data[1] = BME680_SET_BITS_POS_0(data[3], BME680_OSP, config->os_hum);
+    if (config->odr != BME680_ODR_NONE)
+    {
+        odr20 = config->odr;
+        odr3 = 0;
+    }
+    data[4] = BME680_SET_BITS(data[4], BME680_ODR20, odr20);
+    data[0] = BME680_SET_BITS(data[0], BME680_ODR3, odr3);
+
+    uint8_t cmd[] = {
+        BME680_I2C_ADDR | I2C_MASTER_WRITE,
+        0x71,
+        data[0],
+        0x72,
+        data[1],
+        0x73,
+        data[2],
+        0x74,
+        data[3],
+        0x75,
+        data[4]
+    };
+
+    err = i2c_write_many(cmd, sizeof(cmd));
+    if (err != ESP_OK)
+    {
+        goto i2c_error;
+    }
+
+    err = bme680_set_op_mode(op_mode);
+
+
+i2c_error:
+    return err;
+}
+
+esp_err_t bme680_get_config(struct bme680_config *config)
+{
+    esp_err_t err;
+
+    uint8_t data[BME680_LEN_CONFIG];
+    err = i2c_read_register(BME680_I2C_ADDR, BME680_REG_CTRL_GAS_1, data, BME680_LEN_CONFIG);
+    if (err != ESP_OK)
+    {
+        goto i2c_error;
+    }
+
+    config->os_hum = BME680_GET_BITS_POS_0(data[1], BME680_OSH);
+    config->filter = BME680_GET_BITS(data[4], BME680_FILTER);
+    config->os_temp = BME680_GET_BITS(data[3], BME680_OST);
+    config->os_pres = BME680_GET_BITS(data[3], BME680_OSP);
+    if (BME680_GET_BITS(data[0], BME680_ODR3))
+    {
+        config->odr = BME680_ODR_NONE;
+    }
+    else
+    {
+        config->odr = BME680_GET_BITS(data[4], BME680_ODR20);
+    }
+
+
+i2c_error:
+    return err;
+}
+
+esp_err_t bme680_get_data(uint8_t op_mode, struct bme680_data *data, uint8_t *n_data, struct bme680_cal_data *cal, uint8_t variant_id)
+{
+    esp_err_t err = ESP_OK;
+    uint8_t i = 0, j = 0, new_fields = 0;
+    struct bme680_data *field_ptr[3] = { 0 };
+    struct bme680_data field_data[3] = { { 0 } };
+
+    field_ptr[0] = &field_data[0];
+    field_ptr[1] = &field_data[1];
+    field_ptr[2] = &field_data[2];
+
+    if (op_mode == BME680_FORCED_MODE)
+    {
+        err = bme680_read_field_data(0, data, cal, variant_id);
+        if (err != ESP_OK)
+        {
+            goto i2c_error;
+        }
+
+        if (data->status & BME680_NEW_DATA_MASK)
+        {
+            new_fields = 1;
+        }
+        else
+        {
+            new_fields = 0;
+        }
+    }
+    else if (op_mode == BME680_PARALLEL_MODE || op_mode == BME680_SEQUENTIAL_MODE)
+    {
+        err = bme680_read_all_field_data(field_ptr, cal, variant_id);
+        if (err != ESP_OK)
+        {
+            goto i2c_error;
+        }
+
+        new_fields = 0;
+        for (i = 0; i < 3; i++)
+        {
+            if (field_ptr[i]->status & BME680_NEW_DATA_MASK)
+            {
+                new_fields++;
+            }
+        }
+
+        for (i = 0; i < 2; i++)
+        {
+            for (j = i + 1; j < 3; j++)
+            {
+                sort_sensor_data(i, j, field_ptr);
+            }
+        }
+
+        for (i = 0; i < 3; i++)
+        {
+            data[i] = *field_ptr[i];
+        }
+    }
+
+    *n_data = new_fields;
 
 i2c_error:
     return err;
@@ -521,54 +367,407 @@ static esp_err_t bme680_get_calibration_data(struct bme680_cal_data *cal)
         goto i2c_error;
     }
 
-    // /* Temperature related coefficients */
-    // dev->calib.par_t1 =
-    //     (uint16_t)(BME68X_CONCAT_BYTES(coeff_array[BME68X_IDX_T1_MSB], coeff_array[BME68X_IDX_T1_LSB]));
-    // dev->calib.par_t2 =
-    //     (int16_t)(BME68X_CONCAT_BYTES(coeff_array[BME68X_IDX_T2_MSB], coeff_array[BME68X_IDX_T2_LSB]));
-    // dev->calib.par_t3 = (int8_t)(coeff_array[BME68X_IDX_T3]);
+    cal->par_t1 =
+        UINT16_FROM_BYTES(cal_data_array[BME680_IDX_T1_MSB], cal_data_array[BME680_IDX_T1_LSB]);
+    cal->par_t2 =
+        INT16_FROM_BYTES(cal_data_array[BME680_IDX_T2_MSB], cal_data_array[BME680_IDX_T2_LSB]);
+    cal->par_t3 = (int8_t)(cal_data_array[BME680_IDX_T3]);
+    
 
-    // /* Pressure related coefficients */
-    // dev->calib.par_p1 =
-    //     (uint16_t)(BME68X_CONCAT_BYTES(coeff_array[BME68X_IDX_P1_MSB], coeff_array[BME68X_IDX_P1_LSB]));
-    // dev->calib.par_p2 =
-    //     (int16_t)(BME68X_CONCAT_BYTES(coeff_array[BME68X_IDX_P2_MSB], coeff_array[BME68X_IDX_P2_LSB]));
-    // dev->calib.par_p3 = (int8_t)coeff_array[BME68X_IDX_P3];
-    // dev->calib.par_p4 =
-    //     (int16_t)(BME68X_CONCAT_BYTES(coeff_array[BME68X_IDX_P4_MSB], coeff_array[BME68X_IDX_P4_LSB]));
-    // dev->calib.par_p5 =
-    //     (int16_t)(BME68X_CONCAT_BYTES(coeff_array[BME68X_IDX_P5_MSB], coeff_array[BME68X_IDX_P5_LSB]));
-    // dev->calib.par_p6 = (int8_t)(coeff_array[BME68X_IDX_P6]);
-    // dev->calib.par_p7 = (int8_t)(coeff_array[BME68X_IDX_P7]);
-    // dev->calib.par_p8 =
-    //     (int16_t)(BME68X_CONCAT_BYTES(coeff_array[BME68X_IDX_P8_MSB], coeff_array[BME68X_IDX_P8_LSB]));
-    // dev->calib.par_p9 =
-    //     (int16_t)(BME68X_CONCAT_BYTES(coeff_array[BME68X_IDX_P9_MSB], coeff_array[BME68X_IDX_P9_LSB]));
-    // dev->calib.par_p10 = (uint8_t)(coeff_array[BME68X_IDX_P10]);
+    cal->par_p1 =
+        UINT16_FROM_BYTES(cal_data_array[BME680_IDX_P1_MSB], cal_data_array[BME680_IDX_P1_LSB]);
+    cal->par_p2 =
+        INT16_FROM_BYTES(cal_data_array[BME680_IDX_P2_MSB], cal_data_array[BME680_IDX_P2_LSB]);
+    cal->par_p3 = (int8_t)(cal_data_array[BME680_IDX_P3]);
+    cal->par_p4 =
+        INT16_FROM_BYTES(cal_data_array[BME680_IDX_P4_MSB], cal_data_array[BME680_IDX_P4_LSB]);
+    cal->par_p5 =
+        INT16_FROM_BYTES(cal_data_array[BME680_IDX_P5_MSB], cal_data_array[BME680_IDX_P5_LSB]);
+    cal->par_p6 = (int8_t)(cal_data_array[BME680_IDX_P6]);
+    cal->par_p7 = (int8_t)(cal_data_array[BME680_IDX_P7]);
+    cal->par_p8 =
+        INT16_FROM_BYTES(cal_data_array[BME680_IDX_P8_MSB], cal_data_array[BME680_IDX_P8_LSB]);
+    cal->par_p9 =
+        INT16_FROM_BYTES(cal_data_array[BME680_IDX_P9_MSB], cal_data_array[BME680_IDX_P9_LSB]);
+    cal->par_p10 = (uint8_t)cal_data_array[BME680_IDX_P10];
 
-    // /* Humidity related coefficients */
-    // dev->calib.par_h1 =
-    //     (uint16_t)(((uint16_t)coeff_array[BME68X_IDX_H1_MSB] << 4) |
-    //                 (coeff_array[BME68X_IDX_H1_LSB] & BME68X_BIT_H1_DATA_MSK));
-    // dev->calib.par_h2 =
-    //     (uint16_t)(((uint16_t)coeff_array[BME68X_IDX_H2_MSB] << 4) | ((coeff_array[BME68X_IDX_H2_LSB]) >> 4));
-    // dev->calib.par_h3 = (int8_t)coeff_array[BME68X_IDX_H3];
-    // dev->calib.par_h4 = (int8_t)coeff_array[BME68X_IDX_H4];
-    // dev->calib.par_h5 = (int8_t)coeff_array[BME68X_IDX_H5];
-    // dev->calib.par_h6 = (uint8_t)coeff_array[BME68X_IDX_H6];
-    // dev->calib.par_h7 = (int8_t)coeff_array[BME68X_IDX_H7];
+    cal->par_h1 =
+        (uint16_t)(((uint16_t)cal_data_array[BME680_IDX_H1_MSB] << 4) |
+                    (cal_data_array[BME680_IDX_H1_LSB] & BME680_BIT_H1_DATA_MASK));
+                    
+    cal->par_h2 =
+        (uint16_t)(((uint16_t)cal_data_array[BME680_IDX_H2_MSB] << 4) | (cal_data_array[BME680_IDX_H2_LSB] >> 4));
+    cal->par_h3 = (int8_t)cal_data_array[BME680_IDX_H3];
+    cal->par_h4 = (int8_t)cal_data_array[BME680_IDX_H4];
+    cal->par_h5 = (int8_t)cal_data_array[BME680_IDX_H5];
+    cal->par_h6 = (int8_t)cal_data_array[BME680_IDX_H6];
+    cal->par_h7 = (int8_t)cal_data_array[BME680_IDX_H7];
 
-    // /* Gas heater related coefficients */
-    // dev->calib.par_gh1 = (int8_t)coeff_array[BME68X_IDX_GH1];
-    // dev->calib.par_gh2 =
-    //     (int16_t)(BME68X_CONCAT_BYTES(coeff_array[BME68X_IDX_GH2_MSB], coeff_array[BME68X_IDX_GH2_LSB]));
-    // dev->calib.par_gh3 = (int8_t)coeff_array[BME68X_IDX_GH3];
+    cal->par_gh1 = (int8_t)cal_data_array[BME680_IDX_GH1];
+    cal->par_gh2 = INT16_FROM_BYTES(cal_data_array[BME680_IDX_GH2_MSB], cal_data_array[BME680_IDX_GH2_LSB]);
+    cal->par_gh3 = (int8_t)cal_data_array[BME680_IDX_GH3];
 
-    // /* Other coefficients */
-    // dev->calib.res_heat_range = ((coeff_array[BME68X_IDX_RES_HEAT_RANGE] & BME68X_RHRANGE_MSK) / 16);
-    // dev->calib.res_heat_val = (int8_t)coeff_array[BME68X_IDX_RES_HEAT_VAL];
-    // dev->calib.range_sw_err = ((int8_t)(coeff_array[BME68X_IDX_RANGE_SW_ERR] & BME68X_RSERROR_MSK)) / 16;
+    cal->res_heat_range = ((cal_data_array[BME680_IDX_RES_HEAT_RANGE] & BME680_RHRANGE_MASK) / 16);
+    cal->res_heat_val = (int8_t)cal_data_array[BME680_IDX_RES_HEAT_VAL];
+    cal->range_sw_err = ((int8_t)(cal_data_array[BME680_IDX_RANGE_SW_ERR] & BME680_RSERROR_MASK)) / 16;
 
 i2c_error:
     return err;
+}
+
+static esp_err_t bme680_read_field_data(uint8_t index, struct bme680_data *data, struct bme680_cal_data *cal, uint8_t variant_id)
+{
+    esp_err_t err = ESP_OK;
+    uint8_t tries = 5;
+    uint8_t buffer[BME680_LEN_FIELD] = { 0 };
+    uint8_t gas_range_l, gas_range_h;
+    uint32_t adc_temp;
+    uint32_t adc_pres;
+    uint16_t adc_hum;
+    uint16_t adc_gas_res_low, adc_gas_res_high;
+
+    while (tries && err == ESP_OK)
+    {
+        err = i2c_read_register(
+            BME680_I2C_ADDR,
+            (uint8_t)(BME680_REG_FIELD0 + (index * BME680_LEN_FIELD_OFFSET)),
+            buffer,
+            (uint16_t)BME680_LEN_FIELD
+        );
+
+        data->status = buffer[0] & BME680_NEW_DATA_MASK;
+        data->gas_index = buffer[0] & BME680_GAS_INDEX_MASK;
+        data->meas_index = buffer[1];
+
+        adc_pres = (uint32_t)(((uint32_t)buffer[2] * 4096) | ((uint32_t)buffer[3] * 16) | ((uint32_t)buffer[4] / 16));
+        adc_temp = (uint32_t)(((uint32_t)buffer[5] * 4096) | ((uint32_t)buffer[6] * 16) | ((uint32_t)buffer[7] / 16));
+        adc_hum = (uint16_t)(((uint32_t)buffer[8] * 256) | (uint32_t)buffer[9]);
+        adc_gas_res_low = (uint16_t)((uint32_t)buffer[13] * 4 | (((uint32_t)buffer[14]) / 64));
+        adc_gas_res_high = (uint16_t)((uint32_t)buffer[15] * 4 | (((uint32_t)buffer[16]) / 64));
+        gas_range_l = buffer[14] & BME680_GAS_RANGE_MASK;
+        gas_range_h = buffer[16] & BME680_GAS_RANGE_MASK;
+
+        if (variant_id == BME680_VARIANT_GAS_HIGH)
+        {
+            data->status |= buffer[16] & BME680_GASM_VALID_MASK;
+            data->status |= buffer[16] & BME680_HEAT_STAB_MASK;
+        }
+        else
+        {
+            data->status |= buffer[14] & BME680_GASM_VALID_MASK;
+            data->status |= buffer[14] & BME680_HEAT_STAB_MASK;
+        }
+
+        if ((data->status & BME680_NEW_DATA_MASK) && err == ESP_OK)
+        {
+            err = i2c_read_register(BME680_I2C_ADDR, BME680_REG_RES_HEAT0 + data->gas_index, &data->res_heat, 1);
+            if (err != ESP_OK)
+            {
+                break;
+            }
+
+            err = i2c_read_register(BME680_I2C_ADDR, BME680_REG_IDAC_HEAT0 + data->gas_index, &data->idac, 1);
+            if (err != ESP_OK)
+            {
+                break;
+            }
+
+            err = i2c_read_register(BME680_I2C_ADDR, BME680_REG_GAS_WAIT0 + data->gas_index, &data->gas_wait, 1);
+            if (err != ESP_OK)
+            {
+                break;
+            }
+
+            data->temperature = bme680_calc_temperature(adc_temp, cal);
+            data->pressure = bme680_calc_pressure(adc_pres, cal);
+            data->humidity = bme680_calc_humidity(adc_hum, cal);
+            if (variant_id == BME680_VARIANT_GAS_HIGH)
+            {
+                data->gas_resistance = bme680_calc_gas_resistance_high(adc_gas_res_high, gas_range_h);
+            }
+            else
+            {
+                data->gas_resistance = bme680_calc_gas_resistance_low(adc_gas_res_low, gas_range_l, cal);
+            }
+
+            break;
+        }
+
+        if (err == ESP_OK)
+        {
+            vTaskDelay(BME680_PERIOD_POLL / portTICK_PERIOD_MS);
+        }
+
+        tries--;
+    }
+
+    return err;
+}
+
+esp_err_t bme680_read_all_field_data(struct bme680_data * const data[], struct bme680_cal_data *cal, uint8_t variant_id)
+{
+    esp_err_t err = ESP_OK;
+    uint8_t buffer[BME680_LEN_FIELD * 3] = { 0 };
+    uint8_t gas_range_l, gas_range_h;
+    uint32_t adc_temp;
+    uint32_t adc_pres;
+    uint16_t adc_hum;
+    uint16_t adc_gas_res_low, adc_gas_res_high;
+    uint8_t offset;
+    uint8_t set_val[30] = { 0 }; /* idac, res_heat, gas_wait */
+    uint8_t i;
+
+    err = i2c_read_register(
+        BME680_I2C_ADDR, BME680_REG_FIELD0, buffer, (uint32_t)BME680_LEN_FIELD * 3);
+    if (err != ESP_OK)
+    {
+        goto i2c_error;
+    }
+
+    err = i2c_read_register(
+        BME680_I2C_ADDR, BME680_REG_IDAC_HEAT0, set_val, sizeof(set_val));
+    if (err != ESP_OK)
+    {
+        goto i2c_error;
+    }
+
+    for (i = 0; ((i < 3) && (err == ESP_OK)); i++)
+    {
+        offset = (uint8_t)(i * BME680_LEN_FIELD);
+        data[i]->status = buffer[offset] & BME680_NEW_DATA_MASK;
+        data[i]->gas_index = buffer[offset] & BME680_GAS_INDEX_MASK;
+        data[i]->meas_index = buffer[offset + 1];
+
+        /* read the raw data from the sensor */
+        adc_pres =
+            (uint32_t) (((uint32_t) buffer[offset + 2] * 4096) | ((uint32_t) buffer[offset + 3] * 16) |
+                        ((uint32_t) buffer[offset + 4] / 16));
+        adc_temp =
+            (uint32_t) (((uint32_t) buffer[offset + 5] * 4096) | ((uint32_t) buffer[offset + 6] * 16) |
+                        ((uint32_t) buffer[offset + 7] / 16));
+        adc_hum = (uint16_t) (((uint32_t) buffer[offset + 8] * 256) | (uint32_t) buffer[offset + 9]);
+        adc_gas_res_low = (uint16_t) ((uint32_t) buffer[offset + 13] * 4 | (((uint32_t) buffer[offset + 14]) / 64));
+        adc_gas_res_high = (uint16_t) ((uint32_t) buffer[offset + 15] * 4 | (((uint32_t) buffer[offset + 16]) / 64));
+        gas_range_l = buffer[offset + 14] & BME680_GAS_RANGE_MASK;
+        gas_range_h = buffer[offset + 16] & BME680_GAS_RANGE_MASK;
+        if (variant_id == BME680_VARIANT_GAS_HIGH)
+        {
+            data[i]->status |= buffer[offset + 16] & BME680_GASM_VALID_MASK;
+            data[i]->status |= buffer[offset + 16] & BME680_HEAT_STAB_MASK;
+        }
+        else
+        {
+            data[i]->status |= buffer[offset + 14] & BME680_GASM_VALID_MASK;
+            data[i]->status |= buffer[offset + 14] & BME680_HEAT_STAB_MASK;
+        }
+
+        data[i]->idac = set_val[data[i]->gas_index];
+        data[i]->res_heat = set_val[10 + data[i]->gas_index];
+        data[i]->gas_wait = set_val[20 + data[i]->gas_index];
+        data[i]->temperature = bme680_calc_temperature(adc_temp, cal);
+        data[i]->pressure = bme680_calc_pressure(adc_pres, cal);
+        data[i]->humidity = bme680_calc_humidity(adc_hum, cal);
+        if (variant_id == BME680_VARIANT_GAS_HIGH)
+        {
+            data[i]->gas_resistance = bme680_calc_gas_resistance_high(adc_gas_res_high, gas_range_h);
+        }
+        else
+        {
+            data[i]->gas_resistance = bme680_calc_gas_resistance_low(adc_gas_res_low, gas_range_l, cal);
+        }
+    }
+
+i2c_error:
+    return err;
+
+}
+
+/* @brief This internal API is used to calculate the temperature value. */
+static float bme680_calc_temperature(uint32_t temp_adc, struct bme680_cal_data *cal)
+{
+    float var1;
+    float var2;
+    float calc_temp;
+
+    /* calculate var1 data */
+    var1 = ((((float)temp_adc / 16384.0f) - ((float)cal->par_t1 / 1024.0f)) * ((float)cal->par_t2));
+
+    /* calculate var2 data */
+    var2 =
+        (((((float)temp_adc / 131072.0f) - ((float)cal->par_t1 / 8192.0f)) *
+          (((float)temp_adc / 131072.0f) - ((float)cal->par_t1 / 8192.0f))) * ((float)cal->par_t3 * 16.0f));
+
+    /* t_fine value*/
+    cal->t_fine = (var1 + var2);
+
+    /* compensated temperature data*/
+    calc_temp = ((cal->t_fine) / 5120.0f);
+
+    return calc_temp;
+}
+
+/* @brief This internal API is used to calculate the pressure value. */
+static float bme680_calc_pressure(uint32_t pres_adc, const struct bme680_cal_data *cal)
+{
+    float var1;
+    float var2;
+    float var3;
+    float calc_pres;
+
+    var1 = (((float)cal->t_fine / 2.0f) - 64000.0f);
+    var2 = var1 * var1 * (((float)cal->par_p6) / (131072.0f));
+    var2 = var2 + (var1 * ((float)cal->par_p5) * 2.0f);
+    var2 = (var2 / 4.0f) + (((float)cal->par_p4) * 65536.0f);
+    var1 = (((((float)cal->par_p3 * var1 * var1) / 16384.0f) + ((float)cal->par_p2 * var1)) / 524288.0f);
+    var1 = ((1.0f + (var1 / 32768.0f)) * ((float)cal->par_p1));
+    calc_pres = (1048576.0f - ((float)pres_adc));
+
+    /* Avoid exception caused by division by zero */
+    if ((int)var1 != 0)
+    {
+        calc_pres = (((calc_pres - (var2 / 4096.0f)) * 6250.0f) / var1);
+        var1 = (((float)cal->par_p9) * calc_pres * calc_pres) / 2147483648.0f;
+        var2 = calc_pres * (((float)cal->par_p8) / 32768.0f);
+        var3 = ((calc_pres / 256.0f) * (calc_pres / 256.0f) * (calc_pres / 256.0f) * (cal->par_p10 / 131072.0f));
+        calc_pres = (calc_pres + (var1 + var2 + var3 + ((float)cal->par_p7 * 128.0f)) / 16.0f);
+    }
+    else
+    {
+        calc_pres = 0;
+    }
+
+    return calc_pres;
+}
+
+/* This internal API is used to calculate the humidity in integer */
+static float bme680_calc_humidity(uint16_t hum_adc, const struct bme680_cal_data *cal)
+{
+    float calc_hum;
+    float var1;
+    float var2;
+    float var3;
+    float var4;
+    float temp_comp;
+
+    /* compensated temperature data*/
+    temp_comp = ((cal->t_fine) / 5120.0f);
+    var1 = (float)((float)hum_adc) -
+           (((float)cal->par_h1 * 16.0f) + (((float)cal->par_h3 / 2.0f) * temp_comp));
+    var2 = var1 *
+           ((float)(((float)cal->par_h2 / 262144.0f) *
+                    (1.0f + (((float)cal->par_h4 / 16384.0f) * temp_comp) +
+                     (((float)cal->par_h5 / 1048576.0f) * temp_comp * temp_comp))));
+    var3 = (float)cal->par_h6 / 16384.0f;
+    var4 = (float)cal->par_h7 / 2097152.0f;
+    calc_hum = var2 + ((var3 + (var4 * temp_comp)) * var2 * var2);
+    if (calc_hum > 100.0f)
+    {
+        calc_hum = 100.0f;
+    }
+    else if (calc_hum < 0.0f)
+    {
+        calc_hum = 0.0f;
+    }
+
+    return calc_hum;
+}
+
+/* This internal API is used to calculate the gas resistance low value in float */
+static float bme680_calc_gas_resistance_low(uint16_t gas_res_adc, uint8_t gas_range, const struct bme680_cal_data *cal)
+{
+    float calc_gas_res;
+    float var1;
+    float var2;
+    float var3;
+    float gas_res_f = gas_res_adc;
+    float gas_range_f = (1U << gas_range); /*lint !e790 / Suspicious truncation, integral to float */
+    const float lookup_k1_range[16] = {
+        0.0f, 0.0f, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f, -0.8f, 0.0f, 0.0f, -0.2f, -0.5f, 0.0f, -1.0f, 0.0f, 0.0f
+    };
+    const float lookup_k2_range[16] = {
+        0.0f, 0.0f, 0.0f, 0.0f, 0.1f, 0.7f, 0.0f, -0.8f, -0.1f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f
+    };
+
+    var1 = (1340.0f + (5.0f * cal->range_sw_err));
+    var2 = (var1) * (1.0f + lookup_k1_range[gas_range] / 100.0f);
+    var3 = 1.0f + (lookup_k2_range[gas_range] / 100.0f);
+    calc_gas_res = 1.0f / (float)(var3 * (0.000000125f) * gas_range_f * (((gas_res_f - 512.0f) / var2) + 1.0f));
+
+    return calc_gas_res;
+}
+
+/* This internal API is used to calculate the gas resistance value in float */
+static float bme680_calc_gas_resistance_high(uint16_t gas_res_adc, uint8_t gas_range)
+{
+    float calc_gas_res;
+    uint32_t var1 = 262144u >> gas_range;
+    int32_t var2 = (int32_t)gas_res_adc - 512;
+
+    var2 *= 3u;
+    var2 = 4096 + var2;
+
+    calc_gas_res = 1000000.0f * (float)var1 / (float)var2;
+
+    return calc_gas_res;
+}
+
+/* This internal API is used to calculate the heater resistance value */
+static uint8_t calc_res_heat(uint16_t temp, int8_t amb_temp, const struct bme680_cal_data *cal)
+{
+    float var1;
+    float var2;
+    float var3;
+    float var4;
+    float var5;
+    uint8_t res_heat;
+
+    if (temp > 400) /* Cap temperature */
+    {
+        temp = 400;
+    }
+
+    var1 = (((float)cal->par_gh1 / (16.0f)) + 49.0f);
+    var2 = ((((float)cal->par_gh2 / (32768.0f)) * (0.0005f)) + 0.00235f);
+    var3 = ((float)cal->par_gh3 / (1024.0f));
+    var4 = (var1 * (1.0f + (var2 * (float)temp)));
+    var5 = (var4 + (var3 * (float)amb_temp));
+    res_heat =
+        (uint8_t)(3.4f *
+                  ((var5 * (4 / (4 + (float)cal->res_heat_range)) *
+                    (1 / (1 + ((float)cal->res_heat_val * 0.002f)))) -
+                   25));
+
+    return res_heat;
+}
+
+/* This internal API is used sort the sensor data */
+static void swap_fields(uint8_t index1, uint8_t index2, struct bme680_data *field[])
+{
+    struct bme680_data *temp;
+
+    temp = field[index1];
+    field[index1] = field[index2];
+    field[index2] = temp;
+}
+
+/* This internal API is used sort the sensor data */
+static void sort_sensor_data(uint8_t low_index, uint8_t high_index, struct bme680_data *field[])
+{
+    int16_t meas_index1;
+    int16_t meas_index2;
+
+    meas_index1 = (int16_t)field[low_index]->meas_index;
+    meas_index2 = (int16_t)field[high_index]->meas_index;
+    if ((field[low_index]->status & BME680_NEW_DATA_MASK) && (field[high_index]->status & BME680_NEW_DATA_MASK))
+    {
+        int16_t diff = meas_index2 - meas_index1;
+        if (((diff > -3) && (diff < 0)) || (diff > 2))
+        {
+            swap_fields(low_index, high_index, field);
+        }
+    }
+    else if (field[high_index]->status & BME680_NEW_DATA_MASK)
+    {
+        swap_fields(low_index, high_index, field);
+    }
 }
