@@ -179,6 +179,53 @@ i2c_error:
     return err;    
 }
 
+esp_err_t i2c_write_register(uint8_t addr, uint8_t reg, uint8_t *data, size_t len)
+{
+    i2c_cmd_handle_t cmd;
+    esp_err_t err;
+    uint8_t wbuf[] = { (addr << 1) | I2C_MASTER_WRITE, reg };
+
+    cmd = i2c_cmd_link_create();
+
+    err = i2c_master_start(cmd);
+    if (err != ESP_OK)
+    {
+        printf("SM-F: i2c_master_start\n");
+        goto i2c_error;
+    }
+
+    err = i2c_master_write(cmd, wbuf, sizeof(wbuf), I2C_MASTER_ACK);
+    if (err != ESP_OK)
+    {
+        printf("F: i2c_master_write_byte\n");
+        goto i2c_error;
+    }
+
+    err = i2c_master_write(cmd, data, len, I2C_MASTER_ACK);
+    if (err != ESP_OK)
+    {
+        printf("SM-F: i2c_master_write\n");
+        goto i2c_error;
+    }
+    
+    err = i2c_master_stop(cmd);
+    if (err != ESP_OK)
+    {
+        printf("SM-F: i2c_master_stop1\n");
+        goto i2c_error;
+    }
+
+    err = i2c_master_cmd_begin(I2C_MASTER_PORT_NUM, cmd, 1000 / portTICK_PERIOD_MS);
+    if (err != ESP_OK)
+    {
+        printf("SM-F: i2c_master_cmd_begin\n");
+        goto i2c_error;
+    }
+
+i2c_error:
+    i2c_cmd_link_delete(cmd);
+    return err;
+}
 
 esp_err_t test()
 {

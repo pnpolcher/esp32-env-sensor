@@ -8,7 +8,9 @@
 
 #include "esp_log.h"
 
-#include "bme680.h"
+#include "bme68x.h"
+#include "bme68x_defs.h"
+#include "bme68x_wrapper.h"
 #include "i2c.h"
 #include "sps30.h"
 #include "ssd1306.h"
@@ -19,8 +21,48 @@ static const char *TAG = "main";
 void vMeasureTask(void *pvParameters)
 {
     uint8_t ready_flag;
+    
+    struct bme68x_dev dev;
+    printf("Wrapper init.\n");
+    bme68x_wrapper_init_device(&dev);
+    printf("Device init.\n");
+    int8_t err = bme68x_init(&dev);
 
-    bme680_init();
+
+    struct bme68x_conf conf;
+    struct bme68x_heatr_conf hconf;
+
+    conf.filter = BME68X_FILTER_SIZE_3;
+    conf.odr = BME68X_ODR_NONE;
+    conf.os_hum = BME68X_OS_1X;
+    conf.os_pres = BME68X_OS_4X;
+    conf.os_temp = BME68X_OS_8X;
+    bme68x_set_conf(&conf, &dev);
+    bme68x_set_op_mode(BME68X_FORCED_MODE, &dev);
+
+    hconf.enable = BME68X_ENABLE;
+    hconf.heatr_temp = 320;
+    hconf.heatr_dur = 150;
+
+    bme68x_set_heatr_conf(BME68X_FORCED_MODE, &hconf, &dev);
+
+    uint8_t n_fields;
+    struct bme68x_data data;
+    for(size_t i = 0; i < 10; i++)
+    {
+        bme68x_set_op_mode(BME68X_FORCED_MODE, &dev);
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        bme68x_get_data(BME68X_FORCED_MODE, &data, &n_fields, &dev);
+        
+        printf("Humidity: %.2f\n", data.humidity);
+        printf("Pressure: %.2f\n", data.pressure);
+        printf("Temperature: %.2f\n", data.temperature);
+        printf("Gas resistance: %.2f\n", data.gas_resistance);
+    }
+
+    hconf.enable = BME68X_DISABLE;
+    bme68x_set_heatr_conf(BME68X_FORCED_MODE, &hconf, &dev);
+
     for(;;)
     {
         vTaskDelay(1000 / portTICK_PERIOD_MS);
@@ -65,7 +107,7 @@ void app_main(void)
     xReturned = xTaskCreate(
         vMeasureTask,
         "Measure",
-        2048, // stack size in words
+        4096, // stack size in words
         (void *)1, // parameters
         10, // priority,
         &xMeasureHandle
