@@ -7,6 +7,7 @@
 #include "freertos/queue.h"
 
 #include "esp_log.h"
+#include "esp_sleep.h"
 
 #include "bme68x.h"
 #include "bme68x_defs.h"
@@ -18,79 +19,83 @@
 static const char *TAG = "main";
 
 
-void vMeasureTask(void *pvParameters)
+static void bme680_init(struct bme68x_dev *dev)
 {
-    uint8_t ready_flag;
-    
-    struct bme68x_dev dev;
-    printf("Wrapper init.\n");
-    bme68x_wrapper_init_device(&dev);
-    printf("Device init.\n");
-    int8_t err = bme68x_init(&dev);
-
-
     struct bme68x_conf conf;
-    struct bme68x_heatr_conf hconf;
+
+    bme68x_wrapper_init_device(dev);
+    int8_t err = bme68x_init(dev);
 
     conf.filter = BME68X_FILTER_SIZE_3;
     conf.odr = BME68X_ODR_NONE;
     conf.os_hum = BME68X_OS_1X;
     conf.os_pres = BME68X_OS_4X;
     conf.os_temp = BME68X_OS_8X;
-    bme68x_set_conf(&conf, &dev);
-    bme68x_set_op_mode(BME68X_FORCED_MODE, &dev);
+    bme68x_set_conf(&conf, dev);
+    bme68x_set_op_mode(BME68X_FORCED_MODE, dev);
+}
+
+static void bme680_start_measurement(struct bme68x_dev *dev)
+{
+    struct bme68x_heatr_conf hconf;
 
     hconf.enable = BME68X_ENABLE;
     hconf.heatr_temp = 320;
     hconf.heatr_dur = 150;
+    bme68x_set_heatr_conf(BME68X_FORCED_MODE, &hconf, dev);
+    bme68x_set_op_mode(BME68X_FORCED_MODE, dev);
+}
 
-    bme68x_set_heatr_conf(BME68X_FORCED_MODE, &hconf, &dev);
+static void bme680_suspend(struct bme68x_dev *dev)
+{
+    struct bme68x_heatr_conf hconf;
 
+    hconf.enable = BME68X_DISABLE;
+    hconf.heatr_dur = 0;
+    hconf.heatr_temp = 0;
+    bme68x_set_heatr_conf(BME68X_FORCED_MODE, &hconf, dev);
+}
+
+void vMeasureTask(void *pvParameters)
+{
     uint8_t n_fields;
+    uint8_t ready_flag;
+    struct bme68x_dev dev;
     struct bme68x_data data;
-    for(size_t i = 0; i < 10; i++)
+    struct sps30_result sps30_result;
+   
+    bme680_init(&dev);
+
+    for(;;)
     {
-        bme68x_set_op_mode(BME68X_FORCED_MODE, &dev);
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        bme680_start_measurement(&dev);
+        sps30_start_measurement();
+        esp_sleep_enable_timer_wakeup(1000 * 500); // 500 microseconds.
+        esp_light_sleep_start();
+
+        sps30_get_data_ready_flag(&ready_flag);
+        if (ready_flag)
+        {
+            sps30_read_measured_values(&sps30_result);
+            printf("PM1.0 µg/m³ = %f\n", sps30_result.pm1p0);
+            printf("PM2.5 µg/m³ = %f\n", sps30_result.pm2p5);
+            printf("PM4.0 µg/m³ = %f\n", sps30_result.pm4p0);
+            printf("PM10 µg/m³ = %f\n", sps30_result.pm10);
+        }
+
         bme68x_get_data(BME68X_FORCED_MODE, &data, &n_fields, &dev);
-        
         printf("Humidity: %.2f\n", data.humidity);
         printf("Pressure: %.2f\n", data.pressure);
         printf("Temperature: %.2f\n", data.temperature);
         printf("Gas resistance: %.2f\n", data.gas_resistance);
+        fflush(stdin);
+        vTaskDelay(50 / portTICK_PERIOD_MS);
+
+        bme680_suspend(&dev);
+        sps30_stop_measurement();
+        esp_sleep_enable_timer_wakeup(1000 * 5000); // 3 seconds.
+        esp_light_sleep_start();
     }
-
-    hconf.enable = BME68X_DISABLE;
-    bme68x_set_heatr_conf(BME68X_FORCED_MODE, &hconf, &dev);
-
-    for(;;)
-    {
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-    }
-
-    ESP_LOGI(TAG, "Start measurement");
-    sps30_start_measurement();
-
-    for (int i = 0; i < 10; i++)
-    {
-        ESP_LOGI(TAG, "Get ready");
-        sps30_get_data_ready_flag(&ready_flag);
-        while(!ready_flag) {
-            ESP_LOGI(TAG, "Data ready loop");
-            vTaskDelay(100 / portTICK_PERIOD_MS);
-            sps30_read_data_ready_flag(&ready_flag);
-        }
-        ESP_LOGI(TAG, "Read measured values.");
-        sps30_read_measured_values();
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-    }
-
-    sps30_stop_measurement();
-    // for(;;)
-    // {
-    //     test();
-    //     vTaskDelay(1000 / portTICK_PERIOD_MS);
-    // }
 }
 
 void app_main(void)

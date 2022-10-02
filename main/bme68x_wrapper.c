@@ -16,13 +16,11 @@ void bme68x_wrapper_delay(uint32_t period, void *intf_ptr)
 
 int8_t bme68x_wrapper_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t length, void *intf_ptr)
 {
-    printf("Read gets called with reg addr = 0x%X\n", reg_addr);
     return i2c_read_register(BME680_I2C_ADDR, reg_addr, reg_data, length) == ESP_OK ? 0 : -1;
 }
 
 int8_t bme68x_wrapper_write(uint8_t reg_addr, const uint8_t *reg_data, uint32_t length, void *intf_ptr)
 {
-    printf("Write gets called with reg addr = 0x%X\n", reg_addr);
     return i2c_write_register(BME680_I2C_ADDR, reg_addr, reg_data, length) == ESP_OK ? 0 : -1;
 }
 
