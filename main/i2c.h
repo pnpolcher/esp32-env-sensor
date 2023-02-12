@@ -3,8 +3,8 @@
 
 #include "driver/i2c.h"
 
-#define CONFIG_I2C_MASTER_SDA       21
-#define CONFIG_I2C_MASTER_SCL       22
+#define CONFIG_I2C_MASTER_SDA       7
+#define CONFIG_I2C_MASTER_SCL       6
 
 #define I2C_MASTER_SCL_IO           CONFIG_I2C_MASTER_SCL      /*!< GPIO number used for I2C master clock */
 #define I2C_MASTER_SDA_IO           CONFIG_I2C_MASTER_SDA      /*!< GPIO number used for I2C master data  */

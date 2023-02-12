@@ -2,6 +2,8 @@
 #include <string.h>
 #include "sdkconfig.h"
 
+#include <driver/uart.h>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -64,7 +66,9 @@ void vMeasureTask(void *pvParameters)
     struct bme68x_data data;
     struct sps30_result sps30_result;
    
+    ESP_LOGI(TAG, "Got here");
     bme680_init(&dev);
+    ESP_LOGI(TAG, "And here");
 
     for(;;)
     {
@@ -102,6 +106,12 @@ void app_main(void)
 {
     ESP_ERROR_CHECK(i2c_master_init());
     ESP_LOGI(TAG, "I2C initialized OK!");
+
+    gpio_sleep_set_direction(GPIO_NUM_20, GPIO_MODE_INPUT);
+    gpio_sleep_set_pull_mode(GPIO_NUM_20, GPIO_PULLUP_ONLY);
+
+    uart_set_wakeup_threshold(UART_NUM_0, 3);   // 3 edges on U0RXD to wakeup
+    esp_sleep_enable_uart_wakeup(UART_NUM_0);   // Enable UART 0 as wakeup source
 
     // ESP_ERROR_CHECK(ssd1306_init());
     // ESP_LOGI(TAG, "SSD1306 display OK!");

@@ -59,7 +59,7 @@ esp_err_t i2c_write_many(uint8_t *buffer, size_t buflen)
     err = i2c_master_cmd_begin(I2C_MASTER_PORT_NUM, cmd, 1000 / portTICK_PERIOD_MS);
     if (err != ESP_OK)
     {
-        printf("SM-F: i2c_master_cmd_begin\n");
+        printf("SM-F: i2c_master_cmd_begin_wm\n");
         goto i2c_error;
     }
 
@@ -107,7 +107,7 @@ esp_err_t i2c_read_many(uint8_t addr, uint8_t *buffer, size_t buflen)
     err = i2c_master_cmd_begin(I2C_MASTER_PORT_NUM, cmd, 3000 / portTICK_PERIOD_MS);
     if (err != ESP_OK)
     {
-        printf("F: i2c_master_cmd_begin2\n");
+        printf("F: i2c_master_cmd_begin_rm\n");
         goto i2c_error;
     }
 
@@ -170,7 +170,7 @@ esp_err_t i2c_read_register(uint8_t addr, uint8_t reg, uint8_t *data, size_t len
     err = i2c_master_cmd_begin(I2C_MASTER_PORT_NUM, cmd, 3000 / portTICK_PERIOD_MS);
     if (err != ESP_OK)
     {
-        printf("F: i2c_master_cmd_begin2\n");
+        printf("F: i2c_master_cmd_begin_rr\n");
         goto i2c_error;
     }
 
@@ -264,7 +264,7 @@ esp_err_t test()
     err = i2c_master_cmd_begin(I2C_MASTER_PORT_NUM, cmd, 1000 / portTICK_PERIOD_MS);
     if (err != ESP_OK)
     {
-        printf("SM-F: i2c_master_cmd_begin\n");
+        printf("SM-F: i2c_master_cmd_begin_test\n");
         goto i2c_error;
     }
 

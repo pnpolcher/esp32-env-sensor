@@ -2,5 +2,6 @@
     "idf.adapterTargetName": "esp32",
     "files.associations": {
         "stdint.h": "c"
-    }
+    },
+    "cmake.configureOnOpen": false
 }

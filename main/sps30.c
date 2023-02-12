@@ -78,6 +78,7 @@ sps30_err_t sps30_get_data_ready_flag(uint8_t *result)
     err = i2c_write_many(get_data_ready_flag_cmd, sizeof(get_data_ready_flag_cmd));
     if (err != ESP_OK)
     {
+        printf("Error here!");
         return SPS30_ERR_I2C;
     }
 
