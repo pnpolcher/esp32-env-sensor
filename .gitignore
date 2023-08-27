@@ -34,3 +34,5 @@ app-flash*
 bootloader-prefix/
 esp-idf/
 
+openocd.log
+

@@ -74,8 +74,8 @@ void vMeasureTask(void *pvParameters)
     {
         bme680_start_measurement(&dev);
         sps30_start_measurement();
-        esp_sleep_enable_timer_wakeup(1000 * 500); // 500 microseconds.
-        esp_light_sleep_start();
+        // esp_sleep_enable_timer_wakeup(1000 * 500); // 500 microseconds.
+        // esp_light_sleep_start();
 
         sps30_get_data_ready_flag(&ready_flag);
         if (ready_flag)
@@ -97,21 +97,31 @@ void vMeasureTask(void *pvParameters)
 
         bme680_suspend(&dev);
         sps30_stop_measurement();
-        esp_sleep_enable_timer_wakeup(1000 * 5000); // 3 seconds.
-        esp_light_sleep_start();
+        // esp_sleep_enable_timer_wakeup(1000 * 5000); // 3 seconds.
+        // esp_light_sleep_start();
+    }
+}
+
+void vNopTask()
+{
+    for(;;) {
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
 }
 
 void app_main(void)
 {
-    ESP_ERROR_CHECK(i2c_master_init());
-    ESP_LOGI(TAG, "I2C initialized OK!");
+    // ESP_ERROR_CHECK(i2c_master_init());
+    // ESP_LOGI(TAG, "I2C initialized OK!");
 
-    gpio_sleep_set_direction(GPIO_NUM_20, GPIO_MODE_INPUT);
-    gpio_sleep_set_pull_mode(GPIO_NUM_20, GPIO_PULLUP_ONLY);
+    // gpio_sleep_set_direction(GPIO_NUM_20, GPIO_MODE_INPUT);
+    // gpio_sleep_set_pull_mode(GPIO_NUM_20, GPIO_PULLUP_ONLY);
 
-    uart_set_wakeup_threshold(UART_NUM_0, 3);   // 3 edges on U0RXD to wakeup
-    esp_sleep_enable_uart_wakeup(UART_NUM_0);   // Enable UART 0 as wakeup source
+    gpio_set_direction(GPIO_NUM_8, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(GPIO_NUM_8, GPIO_PULLUP_ONLY);
+
+    // uart_set_wakeup_threshold(UART_NUM_0, 3);   // 3 edges on U0RXD to wakeup
+    // esp_sleep_enable_uart_wakeup(UART_NUM_0);   // Enable UART 0 as wakeup source
 
     // ESP_ERROR_CHECK(ssd1306_init());
     // ESP_LOGI(TAG, "SSD1306 display OK!");
@@ -119,12 +129,21 @@ void app_main(void)
     BaseType_t xReturned;
     TaskHandle_t xMeasureHandle = NULL;
 
+    // xReturned = xTaskCreate(
+    //     vMeasureTask,
+    //     "Measure",
+    //     4096, // stack size in words
+    //     (void *)1, // parameters
+    //     10, // priority,
+    //     &xMeasureHandle
+    // );
+
     xReturned = xTaskCreate(
-        vMeasureTask,
-        "Measure",
-        4096, // stack size in words
-        (void *)1, // parameters
-        10, // priority,
+        vNopTask,
+        "NOP",
+        2048,
+        0,
+        1,
         &xMeasureHandle
     );
 
