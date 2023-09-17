@@ -20,7 +20,7 @@ static esp_err_t ssd1306_reg_write_many(uint8_t reg, uint8_t *buffer, size_t buf
 {
     i2c_cmd_handle_t cmd;
     esp_err_t err;
-
+   
     cmd = i2c_cmd_link_create();
 
     err = i2c_master_start(cmd);
@@ -159,7 +159,6 @@ esp_err_t ssd1306_init()
     }
 
     uint8_t bCommandList[] = {
-        (CONFIG_SSD1306_I2C_ADDRESS << 1) | I2C_MASTER_WRITE,
         0x00,
         SSD1306_DISPLAY_OFF,
         SSD1306_SET_DISPLAY_CLKDIV,
@@ -189,7 +188,7 @@ esp_err_t ssd1306_init()
         SSD1306_DISPLAY_ON,
     };
 
-    return i2c_write_many(bCommandList, sizeof(bCommandList));
+    return i2c_write_many(CONFIG_SSD1306_I2C_ADDRESS, bCommandList, sizeof(bCommandList));
 }
 
 esp_err_t ssd1306_display(uint8_t *buffer)
@@ -205,7 +204,7 @@ esp_err_t ssd1306_display(uint8_t *buffer)
         (CONFIG_SSD1306_DISPLAY_HEIGHT >> 3) - 1  // Total number of pages.
     };
 
-    err = i2c_write_many(bCommandList, sizeof(bCommandList));
+    err = i2c_write_many(CONFIG_SSD1306_I2C_ADDRESS, bCommandList, sizeof(bCommandList));
     if (err != ESP_OK)
     {
         goto i2c_error;

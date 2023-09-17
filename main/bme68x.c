@@ -146,20 +146,24 @@ int8_t bme68x_init(struct bme68x_dev *dev)
     int8_t rslt;
 
     rslt = bme68x_soft_reset(dev);
+    printf("Soft reset OK\n");
     if (rslt == BME68X_OK)
     {
         rslt = bme68x_get_regs(BME68X_REG_CHIP_ID, &dev->chip_id, 1, dev);
+        printf("Get regs OK -- rslt = %d, chip_id = 0x%x\n", rslt, dev->chip_id);
         if (rslt == BME68X_OK)
         {
             if (dev->chip_id == BME68X_CHIP_ID)
             {
                 /* Read Variant ID */
                 rslt = read_variant_id(dev);
+                printf("Read variant OK\n");
 
                 if (rslt == BME68X_OK)
                 {
                     /* Get the Calibration data */
                     rslt = get_calib_data(dev);
+                    printf("Get calib data OK\n");
                 }
             }
             else

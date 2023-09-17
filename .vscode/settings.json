@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "utils.h": "c",
+        "i2c.h": "c"
+    },
+    "cmake.configureOnOpen": false
+}

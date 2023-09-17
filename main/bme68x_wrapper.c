@@ -6,7 +6,7 @@
 #include "bme68x_defs.h"
 #include "i2c.h"
 
-#define BME680_I2C_ADDR 0x76
+#define BME680_I2C_ADDR 0x77
 
 
 void bme68x_wrapper_delay(uint32_t period, void *intf_ptr)

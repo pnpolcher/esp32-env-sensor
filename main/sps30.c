@@ -43,25 +43,29 @@ static uint8_t calculate_crc(uint8_t data[2])
 sps30_err_t sps30_start_measurement()
 {
     uint8_t start_measurement_cmd[] = {
-        (SPS30_I2C_ADDR << 1) | I2C_MASTER_WRITE,
         SPS30_CMD_MSB(SPS30_START_MEASUREMENT),
         SPS30_CMD_LSB(SPS30_START_MEASUREMENT),
         0x03, 0x00, 0xAC
     };
 
     return i2c_write_many(
-        start_measurement_cmd, sizeof(start_measurement_cmd)) == ESP_OK ? SPS30_OK : SPS30_ERR_I2C;
+        SPS30_I2C_ADDR,
+        start_measurement_cmd,
+        sizeof(start_measurement_cmd)
+    ) == ESP_OK ? SPS30_OK : SPS30_ERR_I2C;
 }
 
 sps30_err_t sps30_stop_measurement()
 {
     uint8_t stop_measurement_cmd[] = {
-        (SPS30_I2C_ADDR << 1) | I2C_MASTER_WRITE,
         SPS30_CMD_MSB(SPS30_STOP_MEASUREMENT),
         SPS30_CMD_LSB(SPS30_STOP_MEASUREMENT),
     };
     return i2c_write_many(
-        stop_measurement_cmd, sizeof(stop_measurement_cmd)) == ESP_OK ? SPS30_OK : SPS30_ERR_I2C;
+        SPS30_I2C_ADDR,
+        stop_measurement_cmd,
+        sizeof(stop_measurement_cmd)
+    ) == ESP_OK ? SPS30_OK : SPS30_ERR_I2C;
 }
 
 sps30_err_t sps30_get_data_ready_flag(uint8_t *result)
@@ -70,15 +74,18 @@ sps30_err_t sps30_get_data_ready_flag(uint8_t *result)
     uint8_t read_buffer[3];
 
     uint8_t get_data_ready_flag_cmd[] = {
-        (SPS30_I2C_ADDR << 1) | I2C_MASTER_WRITE,
         SPS30_CMD_MSB(SPS30_READ_DATA_READY_FLAG),
         SPS30_CMD_LSB(SPS30_READ_DATA_READY_FLAG)
     };
 
-    err = i2c_write_many(get_data_ready_flag_cmd, sizeof(get_data_ready_flag_cmd));
+    err = i2c_write_many(
+        SPS30_I2C_ADDR,
+        get_data_ready_flag_cmd,
+        sizeof(get_data_ready_flag_cmd)
+    );
     if (err != ESP_OK)
     {
-        printf("Error here!");
+        printf("Error here! %d", err);
         return SPS30_ERR_I2C;
     }
 
@@ -120,12 +127,14 @@ sps30_err_t sps30_read_measured_values(struct sps30_result *result)
     uint8_t read_buffer[60];
 
     uint8_t read_measured_values_cmd[] = {
-        (SPS30_I2C_ADDR << 1) | I2C_MASTER_WRITE,
         SPS30_CMD_MSB(SPS30_READ_MEASURED_VALUES),
         SPS30_CMD_LSB(SPS30_READ_MEASURED_VALUES)
     };
 
-    if (i2c_write_many(read_measured_values_cmd, sizeof(read_measured_values_cmd)) != ESP_OK)
+    if (i2c_write_many(
+        SPS30_I2C_ADDR,
+        read_measured_values_cmd,
+        sizeof(read_measured_values_cmd)) != ESP_OK)
     {
         return SPS30_ERR_I2C;
     }
